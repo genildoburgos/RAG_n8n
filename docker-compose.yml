@@ -59,14 +59,11 @@ services:
     ports:
       - "${EVOLUTION_PORT:-8080}:8080"
     environment:
-      # Server
       - SERVER_URL=${EVOLUTION_SERVER_URL:-http://localhost:8080}
       - SERVER_TYPE=http
       - SERVER_PORT=8080
-      # Autenticação
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-your-evolution-api-key}
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-      # Banco de dados (usa o mesmo Postgres)
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-postgres}?schema=evolution_api
       - DATABASE_CONNECTION_CLIENT_NAME=evolution_exchange
@@ -75,23 +72,50 @@ services:
       - DATABASE_SAVE_MESSAGE_UPDATE=true
       - DATABASE_SAVE_DATA_CONTACTS=true
       - DATABASE_SAVE_DATA_CHATS=true
-      # Cache Redis
       - CACHE_REDIS_ENABLED=true
       - CACHE_REDIS_URI=redis://redis:6379/6
       - CACHE_REDIS_PREFIX_KEY=evolution
       - CACHE_LOCAL_ENABLED=false
-      # WhatsApp
       - CONFIG_SESSION_PHONE_CLIENT=Evolution API
       - CONFIG_SESSION_PHONE_NAME=Chrome
       - QRCODE_LIMIT=30
-      # Logs
       - LOG_LEVEL=ERROR,WARN,INFO
       - LOG_BAILEYS=error
-      # Instâncias
       - DEL_INSTANCE=false
       - LANGUAGE=pt
     volumes:
       - evolution_instances:/evolution/instances
+    networks:
+      - agent-network
+
+  # ============================================
+  # n8n (orquestrador de workflows / agente)
+  # ============================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key}
+      # Banco interno do n8n (usa o mesmo Postgres)
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-postgres}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-postgres}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - DB_POSTGRESDB_SCHEMA=n8n
+    volumes:
+      - n8n_data:/home/node/.n8n
     networks:
       - agent-network
 
@@ -101,6 +125,8 @@ volumes:
   redis_data:
     driver: local
   evolution_instances:
+    driver: local
+  n8n_data:
     driver: local
 
 networks:
