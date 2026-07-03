@@ -1,0 +1,13 @@
+# Variáveis de ambiente (contém senhas)
+.env
+
+# Docker volumes
+pgdata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
