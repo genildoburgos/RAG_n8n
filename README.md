@@ -1,30 +1,52 @@
-# Infraestrutura Multi-Projeto RAG
+# Infraestrutura Multi-Projeto RAG + WhatsApp
 
-Base genérica para rodar múltiplos agentes RAG com **PostgreSQL + pgvector** e **n8n**.
+Base reutilizável para agentes RAG com **PostgreSQL + pgvector**, **Evolution API** (WhatsApp) e workflows **n8n**.
 
 ## Arquitetura
 
 ```
-┌───────────────────┐
-│   n8n (cloud)     │
-│                   │
-│  Workflow Proj 1 ─┼──▶ n8n_vectors_projeto_1 + n8n_chat_histories_projeto_1
-│  Workflow Proj 2 ─┼──▶ n8n_vectors_projeto_2 + n8n_chat_histories_projeto_2
-│  Workflow Proj 3 ─┼──▶ n8n_vectors_projeto_3 + n8n_chat_histories_projeto_3
-│                   │
-└───────┬───────────┘
-        │
-        ▼
-┌──────────────────────────┐
-│  PostgreSQL 16 + pgvector│
-│  (Supabase / Docker)     │
-│  Porta: 5432             │
-└──────────────────────────┘
+┌──────────────┐                    ┌─────────────────┐
+│  WhatsApp    │◀──── webhook ─────▶│      n8n        │
+│  (usuário)   │                    │                 │
+└──────────────┘                    │  AI Agent + RAG │
+       ▲                            └───────┬─────────┘
+       │                                    │
+       │ mensagem                           │ busca vetorial
+       │                                    ▼
+┌──────────────┐                    ┌──────────────────┐
+│ Evolution API│                    │ PostgreSQL 16    │
+│ (Docker)     │                    │ + pgvector       │
+│ :8080        │                    │ :5432            │
+└──────────────┘                    └──────────────────┘
+       │
+┌──────────────┐
+│    Redis     │
+│ (cache)      │
+│ :6379        │
+└──────────────┘
 ```
 
-## Estrutura de tabelas
+## Estrutura do Projeto
 
-| Projeto   | Tabela de Vetores             | Tabela de Chat Memory              |
+```
+RAG_n8n/
+├── docker-compose.yml                      # Postgres + Redis + Evolution API
+├── init-db.sql                             # DDL multi-projeto (vetores + chat)
+├── .env.example                            # Template de variáveis
+├── .gitignore
+├── README.md
+└── workflows/
+    ├── workflow_projeto_1.json             # RAG via chat web (n8n)
+    ├── workflow_projeto_2.json
+    ├── workflow_projeto_3.json
+    ├── workflow_projeto_1_whatsapp.json    # RAG via WhatsApp
+    ├── workflow_projeto_2_whatsapp.json
+    └── workflow_projeto_3_whatsapp.json
+```
+
+## Tabelas no Banco
+
+| Projeto   | Vetores                       | Chat Memory                        |
 |-----------|-------------------------------|------------------------------------|
 | Projeto 1 | `n8n_vectors_projeto_1`      | `n8n_chat_histories_projeto_1`     |
 | Projeto 2 | `n8n_vectors_projeto_2`      | `n8n_chat_histories_projeto_2`     |
@@ -34,88 +56,135 @@ Base genérica para rodar múltiplos agentes RAG com **PostgreSQL + pgvector** e
 
 - Docker e Docker Compose
 - Conta n8n (cloud ou self-hosted)
-- Chave API OpenAI (para embeddings)
+- Chave API OpenAI
+- Número de WhatsApp para conectar
 
-## Setup
+## Setup Rápido
 
 ```bash
-# 1. Configure variáveis
-cp .env.example .env
+# 1. Clone o repositório
+git clone git@github.com:genildoburgos/RAG_n8n.git
+cd RAG_n8n
 
-# 2. Suba o banco
+# 2. Configure variáveis
+cp .env.example .env
+# Edite o .env com suas credenciais
+
+# 3. Suba tudo
 docker compose up -d
 
-# 3. Verifique
+# 4. Verifique
 docker compose ps
 ```
 
-> Se estiver usando Supabase, rode o conteúdo do `init-db.sql` no SQL Editor.
+## Configuração da Evolution API
 
-## Configuração dos Workflows no n8n
+### 1. Acesse o painel
 
-Cada projeto é um workflow independente com a mesma estrutura:
+Após subir o Docker, acesse: `http://localhost:8080`
+
+### 2. Crie uma instância WhatsApp
+
+```bash
+curl -X POST http://localhost:8080/instance/create \
+  -H "apikey: your-evolution-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instanceName": "projeto-1",
+    "integration": "WHATSAPP-BAILEYS",
+    "qrcode": true
+  }'
+```
+
+### 3. Conecte via QR Code
+
+```bash
+curl -X GET http://localhost:8080/instance/connect/projeto-1 \
+  -H "apikey: your-evolution-api-key-here"
+```
+
+Escaneie o QR Code com seu WhatsApp.
+
+### 4. Configure o Webhook na Evolution API
+
+Aponte o webhook da instância para o n8n:
+
+```bash
+curl -X POST http://localhost:8080/webhook/set/projeto-1 \
+  -H "apikey: your-evolution-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook": {
+      "url": "https://SEU-N8N.app.n8n.cloud/webhook/webhook-whatsapp-projeto-1",
+      "webhookByEvents": false,
+      "webhookBase64": false,
+      "events": ["MESSAGES_UPSERT"]
+    }
+  }'
+```
+
+> Substitua a URL pelo webhook real do seu n8n cloud.
+
+## Workflows n8n
+
+### Workflows Chat (web)
+
+Usam o Chat Trigger nativo do n8n. Bom para testar o RAG via interface web.
+
+| Workflow | Arquivo |
+|----------|---------|
+| Projeto 1 | `workflow_projeto_1.json` |
+| Projeto 2 | `workflow_projeto_2.json` |
+| Projeto 3 | `workflow_projeto_3.json` |
+
+### Workflows WhatsApp
+
+Recebem mensagens via Evolution API webhook e respondem automaticamente.
+
+| Workflow | Arquivo | Webhook Path |
+|----------|---------|--------------|
+| Projeto 1 | `workflow_projeto_1_whatsapp.json` | `/webhook/webhook-whatsapp-projeto-1` |
+| Projeto 2 | `workflow_projeto_2_whatsapp.json` | `/webhook/webhook-whatsapp-projeto-2` |
+| Projeto 3 | `workflow_projeto_3_whatsapp.json` | `/webhook/webhook-whatsapp-projeto-3` |
+
+### Fluxo do Workflow WhatsApp
 
 ```
-Upload file → PGVector Store (Insert) → Default Data Loader → Embeddings OpenAI
-Chat Trigger → AI Agent → PGVector Store (Retrieve/Tool) → Embeddings OpenAI
-                       → Postgres Chat Memory
-                       → OpenAI Chat Model
+WhatsApp Webhook → Filtra tipo → Extrai dados → AI Agent (RAG) → Responde via Evolution API
+                                                      │
+                                          ┌───────────┼───────────┐
+                                          ▼           ▼           ▼
+                                    Chat Model   PGVector    Chat Memory
+                                    (OpenAI)     (busca)    (histórico)
 ```
 
-### Credenciais Postgres (compartilhada entre projetos)
+### Como importar
 
-| Campo    | Docker local | Supabase (pooler gratuito)              |
-|----------|--------------|------------------------------------------|
-| Host     | `postgres`   | `aws-0-REGIAO.pooler.supabase.com`       |
-| Port     | `5432`       | `6543`                                   |
-| Database | `postgres`   | `postgres`                               |
-| User     | `postgres`   | `postgres.SEU_PROJECT_ID`                |
-| Password | do .env      | senha do projeto                         |
-| SSL      | Não          | ✅ Sim                                   |
+1. No n8n → **Import workflow** → cole o JSON
+2. Substitua `SUBSTITUIR_CREDENTIAL_ID` pelas suas credenciais
+3. Ative o workflow
 
-### Configuração por projeto
+## Credenciais necessárias no n8n
 
-#### Workflow Projeto 1
+| Credencial | Tipo | Uso |
+|------------|------|-----|
+| OpenAI API | OpenAI | Chat Model + Embeddings |
+| Postgres (vector) | Postgres | PGVector Store + Chat Memory |
 
-| Nó                      | Table Name                        |
-|-------------------------|-----------------------------------|
-| PGVector Store (Insert) | `n8n_vectors_projeto_1`           |
-| PGVector Store (Tool)   | `n8n_vectors_projeto_1`           |
-| Postgres Chat Memory    | `n8n_chat_histories_projeto_1`    |
+### Configuração Postgres no n8n
 
-#### Workflow Projeto 2
+| Campo    | Docker local         | Supabase (pooler)                     |
+|----------|----------------------|---------------------------------------|
+| Host     | `postgres`           | `aws-0-REGIAO.pooler.supabase.com`    |
+| Port     | `5432`               | `6543`                                |
+| Database | `postgres`           | `postgres`                            |
+| User     | `postgres`           | `postgres.SEU_PROJECT_ID`             |
+| Password | do .env              | senha do projeto                      |
+| SSL      | Não                  | Sim                                   |
 
-| Nó                      | Table Name                        |
-|-------------------------|-----------------------------------|
-| PGVector Store (Insert) | `n8n_vectors_projeto_2`           |
-| PGVector Store (Tool)   | `n8n_vectors_projeto_2`           |
-| Postgres Chat Memory    | `n8n_chat_histories_projeto_2`    |
+## Adicionar novo projeto
 
-#### Workflow Projeto 3
-
-| Nó                      | Table Name                        |
-|-------------------------|-----------------------------------|
-| PGVector Store (Insert) | `n8n_vectors_projeto_3`           |
-| PGVector Store (Tool)   | `n8n_vectors_projeto_3`           |
-| Postgres Chat Memory    | `n8n_chat_histories_projeto_3`    |
-
-### Nó: PGVector Store (Tool do AI Agent)
-
-| Parâmetro   | Valor |
-|-------------|-------|
-| Description | `Descreva aqui o tipo de dados do projeto. Ex: "Busca documentos sobre X. Sempre consulte antes de responder."` |
-| Limit       | 4 |
-| Include Metadata | ✅ |
-
-### Nó: AI Agent
-
-| Parâmetro      | Valor sugerido |
-|----------------|----------------|
-| System Message | `Você é um assistente especializado em [TEMA DO PROJETO]. SEMPRE consulte a ferramenta de busca vetorial antes de responder. Baseie suas respostas exclusivamente nos documentos encontrados. Se não encontrar informação relevante, diga que não possui essa informação.` |
-
-## Adicionar um novo projeto
-
-1. Crie as tabelas no banco:
+1. Crie as tabelas:
 ```sql
 CREATE TABLE IF NOT EXISTS n8n_vectors_projeto_N (
     id BIGSERIAL PRIMARY KEY,
@@ -123,10 +192,8 @@ CREATE TABLE IF NOT EXISTS n8n_vectors_projeto_N (
     metadata JSONB DEFAULT '{}',
     embedding vector(1536)
 );
-
 CREATE INDEX IF NOT EXISTS n8n_vectors_projeto_N_embedding_idx
-    ON n8n_vectors_projeto_N
-    USING hnsw (embedding vector_cosine_ops);
+    ON n8n_vectors_projeto_N USING hnsw (embedding vector_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS n8n_chat_histories_projeto_N (
     id SERIAL PRIMARY KEY,
@@ -134,28 +201,38 @@ CREATE TABLE IF NOT EXISTS n8n_chat_histories_projeto_N (
     message JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
-
 CREATE INDEX IF NOT EXISTS n8n_chat_histories_projeto_N_session_idx
     ON n8n_chat_histories_projeto_N (session_id);
 ```
 
 2. Duplique um workflow no n8n
-3. Altere o Table Name dos nós para `n8n_vectors_projeto_N` e `n8n_chat_histories_projeto_N`
-4. Ajuste Description e System Message para o novo tema
+3. Altere Table Names e webhook path
+4. Crie nova instância na Evolution API
+5. Configure o webhook da instância para o novo workflow
 
-## Parar a infra
+## Comandos úteis
 
 ```bash
-docker compose down        # para os containers
-docker compose down -v     # para e apaga todos os dados
+# Ver logs da Evolution API
+docker compose logs -f evolution-api
+
+# Reiniciar Evolution API
+docker compose restart evolution-api
+
+# Parar tudo
+docker compose down
+
+# Apagar dados
+docker compose down -v
 ```
 
 ## Troubleshooting
 
 | Erro | Solução |
 |------|---------|
-| `column "text" does not exist` | Tabela com coluna errada. Use `text`, não `content`. |
-| `ENETUNREACH IPv6` | Use o pooler do Supabase (IPv4 gratuito). |
-| `Host not found` | Remova `https://` do campo Host. Use apenas o hostname. |
-| `None of your tools were used` | Preencha a Description do nó PGVector Store (Tool). |
-| `relation "n8n_vectors_projeto_X" does not exist` | Rode o DDL no SQL Editor do Supabase. |
+| `column "text" does not exist` | Use `text`, não `content` na tabela |
+| `ENETUNREACH IPv6` | Use pooler do Supabase (IPv4) |
+| `None of your tools were used` | Preencha Description do PGVector Store Tool |
+| QR Code não aparece | Verifique logs: `docker compose logs evolution-api` |
+| Webhook não chega no n8n | Confira URL do webhook e se o workflow está ativo |
+| `relation does not exist` | Rode o `init-db.sql` no banco |

@@ -1,8 +1,10 @@
 version: "3.8"
 
 services:
+  # ============================================
   # PostgreSQL + pgvector
-  # Banco vetorial compartilhado para múltiplos projetos RAG
+  # Banco vetorial compartilhado (RAG + Evolution API)
+  # ============================================
   postgres:
     image: pgvector/pgvector:pg16
     container_name: pgvector-db
@@ -24,8 +26,81 @@ services:
     networks:
       - agent-network
 
+  # ============================================
+  # Redis (cache para Evolution API)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent-network
+
+  # ============================================
+  # Evolution API (WhatsApp)
+  # ============================================
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${EVOLUTION_PORT:-8080}:8080"
+    environment:
+      # Server
+      - SERVER_URL=${EVOLUTION_SERVER_URL:-http://localhost:8080}
+      - SERVER_TYPE=http
+      - SERVER_PORT=8080
+      # Autenticação
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-your-evolution-api-key}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      # Banco de dados (usa o mesmo Postgres)
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-postgres}?schema=evolution_api
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_exchange
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      # Cache Redis
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/6
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_LOCAL_ENABLED=false
+      # WhatsApp
+      - CONFIG_SESSION_PHONE_CLIENT=Evolution API
+      - CONFIG_SESSION_PHONE_NAME=Chrome
+      - QRCODE_LIMIT=30
+      # Logs
+      - LOG_LEVEL=ERROR,WARN,INFO
+      - LOG_BAILEYS=error
+      # Instâncias
+      - DEL_INSTANCE=false
+      - LANGUAGE=pt
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - agent-network
+
 volumes:
   pgdata:
+    driver: local
+  redis_data:
+    driver: local
+  evolution_instances:
     driver: local
 
 networks:
